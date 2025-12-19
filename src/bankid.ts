@@ -7,6 +7,29 @@ import axios from "axios";
 import { QrGenerator, QrGeneratorOptions } from "./qrgenerator";
 
 //
+// Utility types
+//
+
+type AtLeastOne<T> = {
+  [K in keyof T]: Required<Pick<T, K>> & Partial<Omit<T, K>>;
+}[keyof T];
+
+type UserVisibleDataFormat = "plaintext" | "simpleMarkdownV1";
+
+type App = AtLeastOne<{
+  appIdentifier: string;
+  deviceOS: string;
+  deviceModelName: string;
+  deviceIdentifier: string;
+}>;
+
+type Web = AtLeastOne<{
+  deviceIdentifier: string;
+  referringDomain: string;
+  userAgent: string;
+}>;
+
+//
 // Type definitions for /auth
 //
 
@@ -15,12 +38,12 @@ export interface AuthRequestV5 {
   personalNumber?: string;
   requirement?: AuthOptionalRequirements;
   userVisibleData?: string;
-  userVisibleDataFormat?: "plaintext" | "simpleMarkdownV1";
+  userVisibleDataFormat?: UserVisibleDataFormat;
   userNonVisibleData?: string;
   returnUrl?: string;
   returnRisk?: boolean;
-  app?: AppData;
-  web?: WebData;
+  app?: App;
+  web?: Web;
 }
 
 export interface AuthResponse {
@@ -42,18 +65,6 @@ interface AuthOptionalRequirements {
   pinCode?: boolean;
 }
 
-interface AppData {
-  appIdentifier: string;
-  deviceOS: string;
-  deviceModelName: string;
-  deviceIdentifier: string;
-}
-
-interface WebData {
-  deviceIdentifier: string;
-  referringDomain: string;
-  userAgent: string;
-}
 
 //
 // Type definitions for /sign
@@ -76,10 +87,10 @@ export interface PaymentRequest {
   returnRisk?: boolean;
   riskFlags?: RiskFlag[];
   userVisibleData?: string;
-  userVisibleDataFormat?: "plaintext" | "simpleMarkdownV1";
+  userVisibleDataFormat?: UserVisibleDataFormat;
   userNonVisibleData?: string;
-  app?: AppData;
-  web?: WebData;
+  app?: App;
+  web?: Web;
   requirement?: PaymentRequirement;
 }
 
@@ -111,15 +122,7 @@ type RiskFlag =
   | "suspiciousPaymentPattern"
   | "other";
 
-type RiskWarning = 
-  | "newRecipient"
-  | "largeAmount"
-  | "foreignCurrency"
-  | "cryptoCurrencyPurchase"
-  | "moneyTransfer"
-  | "overseasTransaction"
-  | "recurringPayment"
-  | "other";
+type RiskWarning = string;
 
 interface PaymentRequirement {
   cardReader?: "class1" | "class2";
@@ -137,7 +140,7 @@ export interface PhoneAuthRequest {
   callInitiator: "user" | "RP";
   personalNumber?: string;
   userVisibleData?: string;
-  userVisibleDataFormat?: "plaintext" | "simpleMarkdownV1";
+  userVisibleDataFormat?: UserVisibleDataFormat;
   userNonVisibleData?: string;
   requirement?: PhoneAuthRequirement;
 }
@@ -161,7 +164,7 @@ export interface PhoneSignRequest {
   callInitiator: "user" | "RP";
   userVisibleData: string;
   personalNumber?: string;
-  userVisibleDataFormat?: "plaintext" | "simpleMarkdownV1";
+  userVisibleDataFormat?: UserVisibleDataFormat;
   userNonVisibleData?: string;
   requirement?: PhoneSignRequirement;
 }
@@ -188,10 +191,10 @@ export interface OtherPaymentRequest {
   returnRisk?: boolean;
   riskFlags?: RiskFlag[];
   userVisibleData?: string;
-  userVisibleDataFormat?: "plaintext" | "simpleMarkdownV1";
+  userVisibleDataFormat?: UserVisibleDataFormat;
   userNonVisibleData?: string;
-  app?: AppData;
-  web?: WebData;
+  app?: App;
+  web?: Web;
   requirement?: OtherPaymentRequirement;
 }
 
@@ -503,7 +506,7 @@ export class BankIdClient {
       throw new Error("userVisibleDataFormat can only be plaintext or simpleMarkdownV1.");
     }
 
-    parameters = {
+    const payload = {
       ...parameters,
       userVisibleData: parameters.userVisibleData
         ? Buffer.from(parameters.userVisibleData).toString("base64")
@@ -515,7 +518,7 @@ export class BankIdClient {
 
     return this.#call<PaymentRequest, PaymentResponse>(
       BankIdMethod.payment,
-      parameters,
+      payload,
     );
   }
 
@@ -531,7 +534,7 @@ export class BankIdClient {
       throw new Error("userVisibleDataFormat can only be plaintext or simpleMarkdownV1.");
     }
 
-    parameters = {
+    const payload = {
       ...parameters,
       userVisibleData: parameters.userVisibleData
         ? Buffer.from(parameters.userVisibleData).toString("base64")
@@ -543,7 +546,7 @@ export class BankIdClient {
 
     return this.#call<PhoneAuthRequest, PhoneAuthResponse>(
       BankIdMethod.phoneAuth,
-      parameters,
+      payload,
     );
   }
 
@@ -561,7 +564,7 @@ export class BankIdClient {
       throw new Error("userVisibleDataFormat can only be plaintext or simpleMarkdownV1.");
     }
 
-    parameters = {
+    const payload = {
       ...parameters,
       userVisibleData: Buffer.from(parameters.userVisibleData).toString("base64"),
       userNonVisibleData: parameters.userNonVisibleData
@@ -571,7 +574,7 @@ export class BankIdClient {
 
     return this.#call<PhoneSignRequest, PhoneSignResponse>(
       BankIdMethod.phoneSign,
-      parameters,
+      payload,
     );
   }
 
@@ -589,7 +592,7 @@ export class BankIdClient {
       throw new Error("userVisibleDataFormat can only be plaintext or simpleMarkdownV1.");
     }
 
-    parameters = {
+    const payload = {
       ...parameters,
       userVisibleData: parameters.userVisibleData
         ? Buffer.from(parameters.userVisibleData).toString("base64")
@@ -601,7 +604,7 @@ export class BankIdClient {
 
     return this.#call<OtherPaymentRequest, OtherPaymentResponse>(
       BankIdMethod.otherPayment,
-      parameters,
+      payload,
     );
   }
 
@@ -783,21 +786,5 @@ export class BankIdClientV6 extends BankIdClient {
 
   async collect(parameters: CollectRequest) {
     return super.collect(parameters) as Promise<CollectResponseV6>;
-  }
-
-  async payment(parameters: PaymentRequest): Promise<PaymentResponse> {
-    return super.payment(parameters);
-  }
-
-  async phoneAuth(parameters: PhoneAuthRequest): Promise<PhoneAuthResponse> {
-    return super.phoneAuth(parameters);
-  }
-
-  async phoneSign(parameters: PhoneSignRequest): Promise<PhoneSignResponse> {
-    return super.phoneSign(parameters);
-  }
-
-  async otherPayment(parameters: OtherPaymentRequest): Promise<OtherPaymentResponse> {
-    return super.otherPayment(parameters);
   }
 }
