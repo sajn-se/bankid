@@ -23,7 +23,7 @@ This is a TypeScript npm module that simplifies integration with the Swedish Ban
 
 **BankIdClient (v5.1)**: Base client class in `src/bankid.ts`
 - Handles authentication, signing, collecting, and canceling BankID operations
-- Uses axios with custom HTTPS agent configured with mTLS (mutual TLS) certificates
+- Uses native `https.request` with mTLS (mutual TLS) certificates (zero runtime dependencies)
 - Provides convenience methods `authenticateAndCollect()` and `signAndCollect()` that poll until completion
 - The `awaitPendingCollect()` method polls the collect endpoint at configurable intervals (default 2000ms)
 
@@ -55,8 +55,8 @@ The library handles mTLS certificates for BankID API communication:
 All BankID API calls follow this pattern:
 1. Method-specific request validation (e.g., `authenticate()`, `sign()`)
 2. Base64 encoding of `userVisibleData` and `userNonVisibleData`
-3. HTTP POST to BankID API via axios instance with mTLS
-4. Error handling: converts axios errors to `BankIdError` or `RequestError`
+3. HTTP POST to BankID API via native `https.request` with mTLS
+4. Error handling: HTTP 4xx/5xx responses become `BankIdError`, network errors become `RequestError`
 
 ### Type System
 
