@@ -9,7 +9,7 @@ async function main() {
 
   if (!ip || !personalNumber) {
     console.log(
-      "Please provide an IP and personal number connected to a test BankId: `yarn test <ip> <pon>`",
+      "Please provide an IP and personal number connected to a test BankId: `pnpm test <ip> <pon>`",
     );
     process.exit(1);
   }

@@ -4,7 +4,7 @@
   "scripts": {
     "build": "tsc",
     "test": "node lib/manualTests.js",
-    "pretest": "yarn build"
+    "pretest": "pnpm build"
   },
   "dependencies": {
     "bankid": "file:../.."

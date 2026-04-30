@@ -6,7 +6,7 @@
     "bankid",
     "authentication"
   ],
-  "version": "3.2.1",
+  "version": "3.3.0",
   "main": "lib/index.js",
   "repository": {
     "type": "git",
@@ -15,7 +15,7 @@
   "scripts": {
     "dev": "tsc --watch",
     "build": "tsc",
-    "prepublishOnly": "yarn build",
+    "prepublishOnly": "pnpm build",
     "format": "prettier --write \"./**/*.{mjs,js,ts,json,md}\""
   },
   "author": "Sven Perkmann",
