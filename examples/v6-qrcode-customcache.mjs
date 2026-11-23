@@ -7,7 +7,7 @@
  */
 import { exec } from "node:child_process";
 import { promisify } from "node:util";
-import { BankIdClientV6 } from "../lib/bankid.js";
+import { BankIdClientV6 } from "@sajn/bankid";
 import { cwd } from "node:process";
 
 const execPromise = promisify(exec);

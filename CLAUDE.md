@@ -4,18 +4,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a TypeScript npm module that simplifies integration with the Swedish BankID service for authentication and signing. It provides a wrapper around the BankID Web Service API with support for both v5.1 and v6.0 API versions.
+`@sajn/bankid` is a TypeScript npm package for the Swedish BankID RP API v6.0. sajn maintains and publishes it. It is a fork of `anyfin/bankid`; open PRs against `sajn-se/bankid`, never upstream.
+
+BankID shut down v5.1 on 2025-09-30. `BankIdClient` (v5.1) is deprecated and kept only for compatibility.
 
 ## Commands
 
 ### Development
-- `yarn dev` - Watch mode compilation with TypeScript
-- `yarn build` - Compile TypeScript to CommonJS in `lib/` directory
-- `yarn format` - Format code with Prettier
+- `pnpm typecheck` - Type-check without emitting
+- `pnpm dev` - Watch mode compilation with TypeScript
+- `pnpm build` - Compile TypeScript to CommonJS in `lib/` directory
+- `pnpm format` - Format code with Prettier
 
 ### Publishing
-- The package uses `prepublishOnly` hook to automatically build before publishing
-- Releases are automated via GitHub Actions when a new GitHub release is created
+- `prepublishOnly` builds before publishing.
+- Creating a GitHub release runs `.github/workflows/release.yml`. It checks that the tag matches `package.json`, type-checks, and publishes with npm trusted publishing (OIDC, no token).
 
 ## Architecture
 
@@ -27,7 +30,7 @@ This is a TypeScript npm module that simplifies integration with the Swedish Ban
 - Provides convenience methods `authenticateAndCollect()` and `signAndCollect()` that poll until completion
 - The `awaitPendingCollect()` method polls the collect endpoint at configurable intervals (default 2000ms)
 
-**BankIdClientV6 (v6.0)**: Extended client in `src/bankid.ts:756`
+**BankIdClientV6 (v6.0)**: Extended client in `src/bankid.ts`
 - Extends BankIdClient with v6.0 API support
 - Adds new endpoints: `payment()`, `phoneAuth()`, `phoneSign()`, `otherPayment()`
 - Integrates QR code generation via `QrGenerator` class (enabled by default)

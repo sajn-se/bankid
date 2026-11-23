@@ -8,12 +8,14 @@ import { QrGenerator, QrGeneratorOptions } from "./qrgenerator";
 // Type definitions for /auth
 //
 
+export type UserVisibleDataFormat = "plaintext" | "simpleMarkdownV1";
+
 export interface AuthRequestV5 {
   endUserIp: string;
   personalNumber?: string;
   requirement?: AuthOptionalRequirements;
   userVisibleData?: string;
-  userVisibleDataFormat?: "simpleMarkdownV1";
+  userVisibleDataFormat?: UserVisibleDataFormat;
   userNonVisibleData?: string;
 }
 
@@ -85,13 +87,25 @@ export type FailedHintCode =
   | "certificateErr"
   | "userCancel"
   | "cancelled"
-  | "startFailed";
+  | "startFailed"
+  | "userDeclinedCall"
+  | "notSupportedByUserApp"
+  | "mrtdVerificationFailed"
+  | "facialRecognitionFailed"
+  | "nfcNotSupportedByDevice"
+  | "multipleBankIdsOnDevice"
+  | "stepUpFailed";
 
 export type PendingHintCode =
   | "outstandingTransaction"
   | "noClient"
   | "started"
-  | "userSign";
+  | "userMrtd"
+  | "userCallConfirm"
+  | "userSign"
+  | "processing"
+  | "userStepUp"
+  | "userFace";
 
 //
 // Type definitions for /cancel
@@ -133,20 +147,31 @@ export enum BankIdMethod {
   sign = "sign",
   collect = "collect",
   cancel = "cancel",
+  payment = "payment",
+  phoneAuth = "phone/auth",
+  phoneSign = "phone/sign",
+  otherPayment = "other/payment",
 }
 
 export type BankIdRequest =
   | AuthRequestV5
   | SignRequest
   | CollectRequest
-  | CancelRequest;
+  | CancelRequest
+  | PaymentRequest
+  | PhoneAuthRequest
+  | PhoneSignRequest
+  | OtherPaymentRequest;
 
 export type BankIdResponse =
   | CancelResponse
   | AuthResponse
   | SignResponse
   | CollectResponseV5
-  | CollectResponseV6;
+  | CollectResponseV6
+  | PhoneAuthResponse
+  | PhoneSignResponse
+  | OtherPaymentResponse;
 
 //
 // Client settings
@@ -180,9 +205,9 @@ export class BankIdError extends Error {
 }
 
 export class RequestError extends Error {
-  readonly request?: any;
+  readonly request?: unknown;
 
-  constructor(request?: any) {
+  constructor(request?: unknown) {
     super(REQUEST_FAILED_ERROR);
     Error.captureStackTrace(this, this.constructor);
 
@@ -201,6 +226,7 @@ interface HttpResponse<T> {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+const MAX_RESPONSE_BYTES = 1_048_576;
 
 function httpsPost<T>(
   url: string,
@@ -210,6 +236,7 @@ function httpsPost<T>(
 ): Promise<HttpResponse<T>> {
   return new Promise((resolve, reject) => {
     const { hostname, pathname, search } = new URL(url);
+    const payload = JSON.stringify(body);
 
     const req = https.request(
       {
@@ -219,28 +246,52 @@ function httpsPost<T>(
         agent,
         headers: {
           "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(payload),
         },
       },
       (res) => {
         const chunks: Buffer[] = [];
-        res.on("data", (chunk: Buffer) => chunks.push(chunk));
+        let size = 0;
+        res.on("data", (chunk: Buffer) => {
+          size += chunk.length;
+          if (size > MAX_RESPONSE_BYTES) {
+            req.destroy(
+              new Error(`Response exceeded ${MAX_RESPONSE_BYTES} bytes`),
+            );
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on("error", reject);
+        res.on("close", () => {
+          if (!res.complete) reject(new Error("Response closed before end"));
+        });
         res.on("end", () => {
-          const raw = Buffer.concat(chunks).toString("utf-8");
+          clearTimeout(deadline);
           try {
-            const data = JSON.parse(raw) as T;
+            const data = JSON.parse(
+              Buffer.concat(chunks).toString("utf-8"),
+            ) as T;
             resolve({ statusCode: res.statusCode ?? 0, data });
           } catch {
-            reject(new Error(`Failed to parse response: ${raw}`));
+            reject(
+              new Error(
+                `Failed to parse response with status ${res.statusCode}`,
+              ),
+            );
           }
         });
       },
     );
 
-    req.setTimeout(timeoutMs, () => {
+    const deadline = setTimeout(() => {
       req.destroy(new Error(`Request timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    req.on("error", (error) => {
+      clearTimeout(deadline);
+      reject(error);
     });
-    req.on("error", reject);
-    req.write(JSON.stringify(body));
+    req.write(payload);
     req.end();
   });
 }
@@ -249,6 +300,9 @@ function httpsPost<T>(
 // Client implementation
 //
 
+/**
+ * @deprecated Targets RP API v5.1, which BankID shut down on 2025-09-30. Use {@link BankIdClientV6}.
+ */
 export class BankIdClient {
   readonly options: Required<BankIdClientSettings>;
   protected baseURL: string;
@@ -302,26 +356,9 @@ export class BankIdClient {
     if (!parameters.endUserIp) {
       throw new Error("Missing required argument endUserIp.");
     }
-    if (
-      parameters.userVisibleDataFormat != null &&
-      parameters.userVisibleDataFormat !== "simpleMarkdownV1"
-    ) {
-      throw new Error("userVisibleDataFormat can only be simpleMarkdownV1.");
-    }
-
-    parameters = {
-      ...parameters,
-      userVisibleData: parameters.userVisibleData
-        ? Buffer.from(parameters.userVisibleData).toString("base64")
-        : undefined,
-      userNonVisibleData: parameters.userNonVisibleData
-        ? Buffer.from(parameters.userNonVisibleData).toString("base64")
-        : undefined,
-    };
-
-    return this.#call<AuthRequestV5, AuthResponse>(
+    return this.call<AuthRequestV5, AuthResponse>(
       BankIdMethod.auth,
-      parameters,
+      encodeUserData(parameters),
     );
   }
 
@@ -331,35 +368,21 @@ export class BankIdClient {
         "Missing required arguments: endUserIp, userVisibleData.",
       );
     }
-    if (
-      parameters.userVisibleDataFormat != null &&
-      parameters.userVisibleDataFormat !== "simpleMarkdownV1"
-    ) {
-      throw new Error("userVisibleDataFormat can only be simpleMarkdownV1.");
-    }
-
-    parameters = {
-      ...parameters,
-      userVisibleData: Buffer.from(parameters.userVisibleData).toString(
-        "base64",
-      ),
-      userNonVisibleData: parameters.userNonVisibleData
-        ? Buffer.from(parameters.userNonVisibleData).toString("base64")
-        : undefined,
-    };
-
-    return this.#call<SignRequest, SignResponse>(BankIdMethod.sign, parameters);
+    return this.call<SignRequest, SignResponse>(
+      BankIdMethod.sign,
+      encodeUserData(parameters),
+    );
   }
 
   collect(parameters: CollectRequest) {
-    return this.#call<CollectRequest, CollectResponse>(
+    return this.call<CollectRequest, CollectResponse>(
       BankIdMethod.collect,
       parameters,
     );
   }
 
   cancel(parameters: CollectRequest): Promise<CancelResponse> {
-    return this.#call<CollectRequest, CancelResponse>(
+    return this.call<CollectRequest, CancelResponse>(
       BankIdMethod.cancel,
       parameters,
     );
@@ -383,28 +406,18 @@ export class BankIdClient {
     return this.awaitPendingCollect(signResponse.orderRef);
   }
 
-  awaitPendingCollect(orderRef: string): Promise<CollectResponse> {
-    return new Promise((resolve, reject) => {
-      const timer = setInterval(() => {
-        this.collect({ orderRef })
-          .then(response => {
-            if (response.status === "complete") {
-              clearInterval(timer);
-              resolve(response);
-            } else if (response.status === "failed") {
-              clearInterval(timer);
-              reject(response);
-            }
-          })
-          .catch(error => {
-            clearInterval(timer);
-            reject(error);
-          });
-      }, this.options.refreshInterval);
-    });
+  async awaitPendingCollect(orderRef: string): Promise<CollectResponse> {
+    for (;;) {
+      await new Promise((resolve) =>
+        setTimeout(resolve, this.options.refreshInterval),
+      );
+      const response = await this.collect({ orderRef });
+      if (response.status === "complete") return response;
+      if (response.status !== "pending") throw response;
+    }
   }
 
-  async #call<Req extends BankIdRequest, Res extends BankIdResponse>(
+  protected async call<Req extends BankIdRequest, Res extends BankIdResponse>(
     method: BankIdMethod,
     payload: Req,
   ): Promise<Res> {
@@ -441,21 +454,58 @@ export class BankIdClient {
       : fs.readFileSync(this.options.pfx);
     const passphrase = this.options.passphrase;
 
-    this.httpsAgent = new https.Agent({ pfx, passphrase, ca });
+    this.httpsAgent = new https.Agent({
+      pfx,
+      passphrase,
+      ca,
+      minVersion: "TLSv1.2",
+      rejectUnauthorized: true,
+    });
   }
 }
 
 interface AuthOptionalRequirementsV6 {
-  pinCode: boolean;
+  pinCode?: boolean;
   cardReader?: "class1" | "class2";
-  mrtd: boolean;
+  /** Cannot be combined with `stepUp`. */
+  mrtd?: boolean;
+  /** `face` alone is not allowed. Cannot be combined with `mrtd`. */
+  stepUp?: ("mrtd" | "face")[];
   certificatePolicies?: string[];
-  personalNumber: string;
+  personalNumber?: string;
+}
+
+export interface WebDeviceData {
+  referringDomain?: string;
+  userAgent?: string;
+  /** Must not be the session cookie. */
+  deviceIdentifier?: string;
+}
+
+export interface AppDeviceData {
+  appIdentifier?: string;
+  deviceOS?: string;
+  deviceModelName?: string;
+  deviceIdentifier?: string;
 }
 
 export interface AuthRequestV6 {
+  /** The end user's IP address as seen by your service, not a proxy's. */
   endUserIp: string;
   requirement?: AuthOptionalRequirementsV6;
+  userVisibleData?: string;
+  userVisibleDataFormat?: UserVisibleDataFormat;
+  userNonVisibleData?: string;
+  /** Put a session nonce in the URL fragment and check it on return. */
+  returnUrl?: string;
+  returnRisk?: boolean;
+  /** Send `web` or `app`, not both. */
+  web?: WebDeviceData;
+  app?: AppDeviceData;
+}
+
+export interface SignRequestV6 extends AuthRequestV6 {
+  userVisibleData: string;
 }
 
 interface AuthResponseV6 extends AuthResponse {
@@ -479,14 +529,195 @@ export interface CompletionDataV6 {
   };
   /** ISO 8601 date format YYYY-MM-DD with a UTC time zone offset. */
   bankIdIssueDate: string;
-  stepUp: boolean;
+  stepUp?: {
+    mrtd?: boolean;
+    face?: boolean;
+  };
   signature: string;
   ocspResponse: string;
+  /** Returned only when `returnRisk` is set, and may be absent. Block `high`. */
+  risk?: "low" | "moderate" | "high";
 }
 
 export interface CollectResponseV6
   extends Omit<CollectResponseV5, "completionData"> {
   completionData?: CompletionDataV6;
+}
+
+//
+// Type definitions for /payment, /phone/auth, /phone/sign and /other/payment
+//
+
+export type CallInitiator = "user" | "RP";
+
+export type RiskFlag =
+  | "newCard"
+  | "newCustomer"
+  | "newRecipient"
+  | "highRiskRecipient"
+  | "largeAmount"
+  | "foreignCurrency"
+  | "cryptoCurrencyPurchase"
+  | "moneyTransfer"
+  | "overseasTransaction"
+  | "recurringPayment"
+  | "suspiciousPaymentPattern"
+  | "partialNameMatch"
+  | "noNameMatch"
+  | "other";
+
+export type RiskWarning =
+  | "newRecipient"
+  | "largeAmount"
+  | "foreignCurrency"
+  | "cryptoCurrencyPurchase"
+  | "moneyTransfer"
+  | "overseasTransaction"
+  | "recurringPayment"
+  | "partialNameMatch"
+  | "noNameMatch"
+  | "other";
+
+export interface Money {
+  /** Digits with at most one `,` as decimal separator, e.g. `"100,00"`. */
+  amount: string;
+  /** ISO 4217 alphabetic code. */
+  currency: string;
+}
+
+/** Set exactly one of `nameB64` (preferred) and `name`. */
+export type RecipientName =
+  | { nameB64: string; name?: never }
+  | { name: string; nameB64?: never };
+
+interface TransactionBase {
+  /** YYYY-MM-DD */
+  date?: string;
+  riskWarning?: RiskWarning;
+  recurring?: boolean;
+  thirdPartyInitiatorB64?: string;
+}
+
+export interface CardTransaction extends TransactionBase {
+  transactionType: "card";
+  recipient: RecipientName;
+  money?: Money;
+}
+
+export interface NpaTransaction extends TransactionBase {
+  transactionType: "npa";
+  recipient: RecipientName;
+}
+
+export interface AccountTransaction extends TransactionBase {
+  transactionType:
+    | "bankgiro"
+    | "plusgiro"
+    | "samebank"
+    | "domesticbank"
+    | "foreignbank";
+  date: string;
+  money: Money;
+  recipient: { nameB64?: string; accountNumber: string };
+}
+
+export interface DirectTransaction extends TransactionBase {
+  transactionType: "direct";
+  money: Money;
+  /** Set at least one field. */
+  recipient: {
+    nameB64?: string;
+    legalNameB64?: string;
+    accountNumber?: string;
+    phoneNumber?: string;
+  };
+}
+
+export type UserVisibleTransaction =
+  | CardTransaction
+  | NpaTransaction
+  | AccountTransaction
+  | DirectTransaction;
+
+export type UserVisibleTransactionCardNpa = CardTransaction | NpaTransaction;
+
+type RequirementsWithoutPersonalNumber = Omit<
+  AuthOptionalRequirementsV6,
+  "personalNumber"
+>;
+
+export interface PaymentRequest extends AuthRequestV6 {
+  userVisibleTransaction: UserVisibleTransaction;
+  riskFlags?: RiskFlag[];
+}
+
+export interface PaymentResponse extends AuthResponse {
+  qr?: QrGenerator;
+}
+
+export interface PhoneAuthRequest {
+  callInitiator: CallInitiator;
+  personalNumber: string;
+  requirement?: RequirementsWithoutPersonalNumber;
+  userVisibleData?: string;
+  userVisibleDataFormat?: UserVisibleDataFormat;
+  userNonVisibleData?: string;
+}
+
+export interface PhoneAuthResponse {
+  orderRef: string;
+}
+
+export interface PhoneSignRequest extends PhoneAuthRequest {
+  userVisibleData: string;
+}
+
+export interface PhoneSignResponse extends PhoneAuthResponse {}
+
+export interface OtherPaymentRequest extends Omit<
+  PaymentRequest,
+  "endUserIp" | "requirement" | "userVisibleTransaction"
+> {
+  personalNumber: string;
+  requirement?: RequirementsWithoutPersonalNumber;
+  userVisibleTransaction: UserVisibleTransactionCardNpa;
+}
+
+export interface OtherPaymentResponse extends PhoneAuthResponse {}
+
+type UserData = Pick<
+  AuthRequestV6,
+  "userVisibleData" | "userVisibleDataFormat" | "userNonVisibleData"
+>;
+
+function encodeUserData<T extends UserData>(parameters: T): T {
+  if (
+    parameters.userVisibleDataFormat != null &&
+    parameters.userVisibleDataFormat !== "plaintext" &&
+    parameters.userVisibleDataFormat !== "simpleMarkdownV1"
+  ) {
+    throw new Error(
+      "userVisibleDataFormat must be plaintext or simpleMarkdownV1.",
+    );
+  }
+  return {
+    ...parameters,
+    userVisibleData: parameters.userVisibleData
+      ? Buffer.from(parameters.userVisibleData).toString("base64")
+      : undefined,
+    userNonVisibleData: parameters.userNonVisibleData
+      ? Buffer.from(parameters.userNonVisibleData).toString("base64")
+      : undefined,
+  };
+}
+
+function assertCallInitiator(parameters: PhoneAuthRequest) {
+  if (
+    parameters.callInitiator !== "user" &&
+    parameters.callInitiator !== "RP"
+  ) {
+    throw new Error("callInitiator must be user or RP.");
+  }
 }
 
 interface BankIdClientSettingsV6 extends BankIdClientSettings {
@@ -497,7 +728,7 @@ interface BankIdClientSettingsV6 extends BankIdClientSettings {
 
 /**
  * A class for creating a BankId Client based on v6.0 api, extending from BankIdClient
- * @see https://www.bankid.com/en/utvecklare/guider/teknisk-integrationsguide/webbservice-api
+ * @see https://developers.bankid.com/api-references/auth--sign/overview
  */
 export class BankIdClientV6 extends BankIdClient {
   version = "v6.0";
@@ -522,7 +753,7 @@ export class BankIdClientV6 extends BankIdClient {
     return { ...resp, qr };
   }
 
-  async sign(parameters: SignRequest): Promise<SignResponseV6> {
+  async sign(parameters: SignRequestV6): Promise<SignResponseV6> {
     const resp = await super.sign(parameters);
     const qr = this.options.qrEnabled
       ? new QrGenerator(resp, this.options.qrOptions)
@@ -530,7 +761,83 @@ export class BankIdClientV6 extends BankIdClient {
     return { ...resp, qr };
   }
 
+  async payment(parameters: PaymentRequest): Promise<PaymentResponse> {
+    if (!parameters.endUserIp || !parameters.userVisibleTransaction) {
+      throw new Error(
+        "Missing required arguments: endUserIp, userVisibleTransaction.",
+      );
+    }
+    const resp = await this.call<PaymentRequest, AuthResponse>(
+      BankIdMethod.payment,
+      encodeUserData(parameters),
+    );
+    const qr = this.options.qrEnabled
+      ? new QrGenerator(resp, this.options.qrOptions)
+      : undefined;
+    return { ...resp, qr };
+  }
+
+  async phoneAuth(parameters: PhoneAuthRequest): Promise<PhoneAuthResponse> {
+    if (!parameters.callInitiator || !parameters.personalNumber) {
+      throw new Error(
+        "Missing required arguments: callInitiator, personalNumber.",
+      );
+    }
+    assertCallInitiator(parameters);
+    return this.call<PhoneAuthRequest, PhoneAuthResponse>(
+      BankIdMethod.phoneAuth,
+      encodeUserData(parameters),
+    );
+  }
+
+  async phoneSign(parameters: PhoneSignRequest): Promise<PhoneSignResponse> {
+    if (
+      !parameters.callInitiator ||
+      !parameters.personalNumber ||
+      !parameters.userVisibleData
+    ) {
+      throw new Error(
+        "Missing required arguments: callInitiator, personalNumber, userVisibleData.",
+      );
+    }
+    assertCallInitiator(parameters);
+    return this.call<PhoneSignRequest, PhoneSignResponse>(
+      BankIdMethod.phoneSign,
+      encodeUserData(parameters),
+    );
+  }
+
+  async otherPayment(
+    parameters: OtherPaymentRequest,
+  ): Promise<OtherPaymentResponse> {
+    if (!parameters.personalNumber || !parameters.userVisibleTransaction) {
+      throw new Error(
+        "Missing required arguments: personalNumber, userVisibleTransaction.",
+      );
+    }
+    return this.call<OtherPaymentRequest, OtherPaymentResponse>(
+      BankIdMethod.otherPayment,
+      encodeUserData(parameters),
+    );
+  }
+
   async collect(parameters: CollectRequest) {
     return super.collect(parameters) as Promise<CollectResponseV6>;
+  }
+
+  async authenticateAndCollect(
+    parameters: AuthRequestV6,
+  ): Promise<CollectResponseV6> {
+    const { orderRef } = await this.authenticate(parameters);
+    return this.awaitPendingCollect(orderRef);
+  }
+
+  async signAndCollect(parameters: SignRequestV6): Promise<CollectResponseV6> {
+    const { orderRef } = await this.sign(parameters);
+    return this.awaitPendingCollect(orderRef);
+  }
+
+  async awaitPendingCollect(orderRef: string): Promise<CollectResponseV6> {
+    return super.awaitPendingCollect(orderRef) as Promise<CollectResponseV6>;
   }
 }

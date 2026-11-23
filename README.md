@@ -1,203 +1,129 @@
-# bankid
+# @sajn/bankid
 
-A npm module to simplify integration with the Swedish [Bank ID](https://www.bankid.com/en/) service for user authentication and signing processes.
+A Node.js client for the Swedish [BankID](https://www.bankid.com/en/) RP API v6.0. It covers authentication, signing, payments, and phone orders, and it has no runtime dependencies.
+
+[sajn](https://www.sajn.se) maintains this package. It is a fork of [anyfin/bankid](https://github.com/anyfin/bankid).
 
 ## Installation
 
 ```sh
-# If you prefer npm
-npm install --save bankid
-# If you prefer yarn
-yarn install bankid
+pnpm add @sajn/bankid
 ```
 
-## Usage V6
+Node.js 14.18 or later is required.
+
+## Usage
 
 ```javascript
-import { BankIdClientV6 } from "bankid";
+import { BankIdClientV6 } from "@sajn/bankid";
 
-const client = new BankIdClientV6({
-  production: false,
-});
+const client = new BankIdClientV6({ production: false });
 
-const { autoStartToken, orderRef } = await client.authenticate({
+const { autoStartToken, orderRef, qr } = await client.authenticate({
   endUserIp: "127.0.0.1",
 });
 
-// Generate deep link from autoStarttoken and try to open BankID app
-// See ./examples
+// Same device: open the BankID app with autoStartToken.
+// Other device: show a QR code that refreshes every second.
+for await (const qrData of qr.nextQr(orderRef, { timeout: 60 })) {
+  // Send qrData to the browser and render it.
+  await new Promise(resolve => setTimeout(resolve, 1000));
+}
 
-client
-  .awaitPendingCollect(orderRef)
-  .then(res => {
-    console.log(res.completionData)
-  })
-
-```
-Acting on a session is done trough opening the app or trough scanning a QR Code, both examples are documented in detail [in the examples directory](./examples)
-
-## Usage V5
-
-```javascript
-import { BankIdClient } from "bankid";
-
-const client = new BankIdClient();
-const pno = "YYYYMMDDXXXX";
-
-client
-  .authenticateAndCollect({
-    personalNumber: pno,
-    endUserIp: "127.0.0.1",
-    userVisibleData: "Authentication request for my service",
-  })
-  .then(res => console.log(res.completionData))
-  .catch(console.error);
+const { completionData } = await client.awaitPendingCollect(orderRef);
 ```
 
-As outlined in the [relying party guidelines](https://www.bankid.com/assets/bankid/rp/bankid-relying-party-guidelines-v3.5.pdf),
-there are four main methods (arguments marked with `*` are required)
+Keep `qrStartSecret` on your server. Send the browser only the QR string from `qr.nextQr()`, never the full response from `authenticate()`, `sign()`, or `payment()`.
 
-- `authenticate({endUserIp*, personalNumber, requirement, userVisibleData, userVisibleDataFormat, userNonVisibleData})`
-- `sign({endUserIp*, personalNumber, requirement, userVisibleData*, userVisibleDataFormat, userNonVisibleData})`
-- `collect({orderRef*})`
-- `cancel({orderRef*})`
+The [examples directory](./examples) has runnable flows for autostart, QR codes, payments, phone auth, collect, and cancel.
 
-Note that `userVisibleData` will be base64-encoded before sent to the BankID API.
+## Methods
 
-Additionally, `bankid` provides convenience methods to combine auth / sign with periodic collection of the status until the process either failed or succeeded (as shown in the example code above):
+`BankIdClientV6` has these methods. Fields marked with `*` are required.
 
-- `authenticateAndCollect(...)`
-- `signAndCollect(...)`
+| Method | Endpoint | Key fields |
+| --- | --- | --- |
+| `authenticate()` | `/auth` | `endUserIp*`, `requirement`, `userVisibleData`, `returnUrl`, `returnRisk`, `web`, `app` |
+| `sign()` | `/sign` | `endUserIp*`, `userVisibleData*`, `requirement`, `returnUrl`, `returnRisk`, `web`, `app` |
+| `payment()` | `/payment` | `endUserIp*`, `userVisibleTransaction*`, `riskFlags`, `returnUrl`, `returnRisk`, `web`, `app` |
+| `phoneAuth()` | `/phone/auth` | `callInitiator*`, `personalNumber*`, `requirement` |
+| `phoneSign()` | `/phone/sign` | `callInitiator*`, `personalNumber*`, `userVisibleData*`, `requirement` |
+| `otherPayment()` | `/other/payment` | `personalNumber*`, `userVisibleTransaction*` (`card` or `npa` only) |
+| `collect()` | `/collect` | `orderRef*` |
+| `cancel()` | `/cancel` | `orderRef*` |
 
-Full example _not_ using the convenience methods:
+The client base64-encodes `userVisibleData` and `userNonVisibleData`. Fields that end in `B64`, such as `recipient.nameB64`, are sent unchanged, so you encode them.
 
-```javascript
-import { BankIdClient } from "bankid";
+`authenticate()`, `sign()`, and `payment()` return a `qr` generator unless you set `qrEnabled: false`.
 
-const client = new BankIdClient();
-const pno = "YYYYMMDDXXXX";
-const message = "some message displayed to the user to sign";
+These convenience methods poll `collect()` until the order completes or fails:
 
-client
-  .sign({
-    endUserIp: "127.0.0.1",
-    personalNumber: pno,
-    userVisibleData: message,
-  })
-  .then(res => {
-    const timer = setInterval(() => {
-      const done = () => clearInterval(timer);
-      client
-        .collect({ orderRef: res.orderRef })
-        .then(res => {
-          if (res.status === "complete") {
-            console.log(res.completionData);
-            done();
-          } else if (res.status === "failed") {
-            throw new Error(res.hintCode);
-          }
-        })
-        .catch(err => {
-          console.error(err);
-          done();
-        });
-    }, 1000);
-  })
-  .catch(console.error);
-```
+- `authenticateAndCollect()`
+- `signAndCollect()`
+- `awaitPendingCollect(orderRef)`
+
+They resolve with the collect response when the order completes. They reject with the collect response when it fails, and with a `BankIdError` or `RequestError` when a call fails.
+
+The request and response types follow the [BankID OpenAPI spec](https://developers.bankid.com/api-references/auth--sign/overview).
+
+## Security checklist
+
+- Send the end user's real IP as `endUserIp`, not the IP of a proxy.
+- Pass `returnUrl` in the API call instead of the autostart URL. Put a session nonce in its fragment (`#nonce=...`) and check the nonce on return.
+- In same-device flows, check that `completionData.device.ipAddress` matches the IP you see.
+- If you set `returnRisk: true`, block orders where `completionData.risk` is `"high"`.
+- Don't reuse an `orderRef` after it completes or fails.
 
 ## Configuration
 
-By default, `bankid` is instantiated with the following configuration pointing to the Bank ID Test Environment:
-
 ```javascript
-settings = {
-  refreshInterval: 1000, // how often to poll status changes for authenticateAndCollect and signAndCollect
-  production: false, // use test environment
-  pfx: "PATH_TO_TEST_ENV_PFX", // test environment
-  passphrase: "TEST_ENV_PASSPHRASE", // test environment
-  ca: "CERTIFICATE", // dynamically set depending on the "production" setting unless explicitely provided
-};
+const client = new BankIdClientV6({
+  production: false, // Test environment. The bundled test certificate is used.
+  refreshInterval: 2000, // Milliseconds between collect calls in the convenience methods.
+  requestTimeout: 30000, // Milliseconds before a request is aborted.
+  qrEnabled: true, // Attach a QR generator to auth, sign, and payment responses.
+  pfx: "certs/bankid.pfx", // Path relative to the working directory, or a Buffer.
+  passphrase: "...",
+  ca: undefined, // Defaults to the bundled BankID root CA for the environment.
+});
 ```
 
-For production, you'll want to pass in your own pfx and passphrase instead:
+In production, `pfx` and `passphrase` are required:
 
 ```javascript
-import { BankIdClient } from "bankid";
-
-const client = new BankIdClient({
+const client = new BankIdClientV6({
   production: true,
-  pfx: "PATH_TO_YOUR_PFX", // alternatively also accepts buffer
-  passphrase: "YOUR_PASSPHRASE",
-});
-```
-
-### PFX path
-
-When providing a pfx path, it is expected to be based on the current working directory from where the script is run:
-
-```
-.
-├── certs
-│   └── bankid.pfx
-├── src
-│   └── main.js
-```
-
-From the current directory you would run the script with `node src/main.js` and provide the pfx path:
-
-```javascript
-import { BankIdClient } from "bankid";
-
-const client = new BankIdClient({
   pfx: "certs/bankid.pfx",
+  passphrase: process.env.BANKID_PASSPHRASE,
 });
 ```
 
-### Compatibility
+### Legacy certificates
 
-In Node.js v17+, OpenSSL is upgraded from v1.1.1 to v3, introducing subtle breaking changes for this library that yield this error:
+Older BankID certificates use algorithms that OpenSSL 3 (Node.js 17 and later) rejects with `Error: unsupported`. The bundled test certificate works as is.
 
-```
-Error: unsupported
-    at configSecureContext (node:internal/tls/secure-context:278:15)
-```
-
-This is due to the legacy algorithms used to generate BankID certificates - and to handle this (until BankID updates their default certificate formats) there are two solutions.
-
-#### Manual certificate modernization (suggested)
-
-First, ensure `OpenSSL` v3.x needs to be installed on your machine.
-
-Then, you can run the following commands to get an updated certificate (`new.pfx`):
+To convert a legacy certificate, run these commands with OpenSSL 3:
 
 ```sh
 openssl pkcs12 -in old.pfx -nodes -legacy -out combined.pem
 openssl pkcs12 -in combined.pem -export -out new.pfx
 ```
 
-#### Enable legacy OpenSSL support
+If you can't convert the certificate, run Node.js with `--openssl-legacy-provider`.
 
-If for any reason you do not want to modify the certificates, you can also enable the legacy OpenSSL provider when running Node.js:
+### v5.1 client
 
-```sh
-node --openssl-legacy-provider ...
-```
+BankID shut down RP API v5.1 on 2025-09-30. The deprecated `BankIdClient` still targets v5.1, so its calls fail with HTTP 403. Use `BankIdClientV6`.
 
-## Deploy/Publish
+## Publishing
 
-In order to deploy new versions, bump the version in `package.json` and create a new GitHub release.
+To publish a new version:
 
-GitHub Actions should automagically release it to npm. ✨
+1. Bump `version` in `package.json` and merge to `master`.
+2. Create a GitHub release with the tag `v<version>`, for example `v4.0.0`.
 
-## Ownership
+The release workflow checks that the tag matches `package.json`, runs the type check, and publishes to npm with provenance. It uses npm trusted publishing, so the repository stores no npm token.
 
-Repo ownership: [Jeff Trinidad - @jefftrinidad29](https://github.com/jefftrinidad29) \
-Last audit: 2023-04-27 by [@jefftrinidad29](https://github.com/jefftrinidad29)
+## License
 
-# Audit Notes
-
-> 27th April 2023 by @jefftrinidad29
-
-- Upgraded all non-critical dependencies
-- yarn audit fix
+MIT. See [LICENSE](./LICENSE).
