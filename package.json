@@ -1,29 +1,40 @@
 {
-  "name": "bankid",
+  "name": "@sajn/bankid",
   "description": "Npm module to simplify integration with the Swedish Bank ID service",
   "keywords": [
     "node",
     "bankid",
     "authentication"
   ],
-  "version": "3.3.1",
+  "version": "4.0.0",
   "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "files": [
+    "lib",
+    "cert"
+  ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/anyfin/bankid.git"
+    "url": "git+https://github.com/sajn-se/bankid.git"
   },
   "scripts": {
     "dev": "tsc --watch",
     "build": "tsc",
     "prepublishOnly": "pnpm build",
-    "format": "prettier --write \"./**/*.{mjs,js,ts,json,md}\""
+    "format": "prettier --write \"./**/*.{mjs,js,ts,json,md}\"",
+    "typecheck": "tsc --noEmit"
   },
   "author": "Sven Perkmann",
   "license": "MIT",
-  "homepage": "https://github.com/anyfin/bankid#readme",
+  "homepage": "https://github.com/sajn-se/bankid#readme",
   "bugs": {
-    "url": "https://github.com/anyfin/bankid/issues"
+    "url": "https://github.com/sajn-se/bankid/issues"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "packageManager": "pnpm@12.3.4",
   "devDependencies": {
     "@types/node": "^20.11.10",
     "prettier": "^3.2.4",
